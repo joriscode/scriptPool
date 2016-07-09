@@ -1,0 +1,174 @@
+/* sbk
+scala version 2.11.8
+library "commons-codec" % "commons-codec" % "1.6"
+library "com.propensive" % "rapture-fs_2.11" % "2.0.0-M6"
+*/
+
+  import annotation.implicitNotFound
+
+  import java.io.{DataOutputStream, ByteArrayOutputStream}
+
+  @implicitNotFound(msg = "Could not find a Writes for ${T}")
+  trait Writes[T] {
+
+    def writes(value: T): Array[Byte]
+  }
+
+  class DataOutputStreamWrites[T](writeValue: (DataOutputStream, T) => Unit) extends Writes[T] {
+
+    def writes(value: T): Array[Byte] = {
+      val bos = new ByteArrayOutputStream
+      val dos = new DataOutputStream(bos)
+      writeValue(dos, value)
+      dos.flush()
+      val byteArray = bos.toByteArray
+      bos.close()
+      byteArray
+    }
+  }
+
+    object WritesString extends Writes[String] {
+      def writes(value: String) = value.getBytes("UTF-8")
+    }
+    object WritesLong extends DataOutputStreamWrites[Long](_.writeLong(_))
+    object WritesInt extends DataOutputStreamWrites[Int](_.writeInt(_))
+    object WritesShort extends DataOutputStreamWrites[Short](_.writeShort(_))
+
+
+
+  import javax.crypto.spec.SecretKeySpec
+  import javax.crypto.Cipher
+
+  trait Encryption {
+    def encrypt(dataBytes: Array[Byte], secret: String): Array[Byte]
+    def decrypt(codeBytes: Array[Byte], secret: String): Array[Byte]
+
+    def encrypt(str: String, secret: String): Array[Byte] = encrypt(WritesString.writes(str), secret)
+    //def encrypt[T:Writes](data: T, secret: String): Array[Byte] = encrypt(implicitly[Writes[T]].writes(data), secret)
+  }
+
+  class JavaCryptoEncryption(algorithmName: String) extends Encryption {
+
+    def encrypt(bytes: Array[Byte], secret: String): Array[Byte] = {
+      val secretKey = new SecretKeySpec(secret.getBytes("UTF-8"), algorithmName)
+      val encipher = Cipher.getInstance(algorithmName + "/ECB/PKCS5Padding")
+      encipher.init(Cipher.ENCRYPT_MODE, secretKey)
+      encipher.doFinal(bytes)
+    }
+
+    def decrypt(bytes: Array[Byte], secret: String): Array[Byte] = {
+      val secretKey = new SecretKeySpec(secret.getBytes("UTF-8"), algorithmName)
+      val encipher = Cipher.getInstance(algorithmName + "/ECB/PKCS5Padding")
+      encipher.init(Cipher.DECRYPT_MODE, secretKey)
+      encipher.doFinal(bytes)
+    }
+  }
+
+  object DES extends JavaCryptoEncryption("DES")
+  object AES extends JavaCryptoEncryption("AES")
+
+object Helper {
+  import scala.reflect.io.Path
+  import rapture.fs._
+
+  def getCurrentDirectory = new java.io.File( "." ).getCanonicalPath.stripPrefix("/")
+
+  def fsParent(fs: FsUrl): FsUrl = {
+    FsUrl(fs.elements.dropRight(1))
+  }
+
+  def pathToFs(path: String): FsUrl = {
+    if (path.startsWith("/")) {
+      FsUrl(path.split("/").drop(1))
+
+    } else {
+      val file = path.split("/").toList match {
+        case "." :: xs => getCurrentDirectory :: xs
+        case ".." :: xs => fsParent(FsUrl(getCurrentDirectory.split("/"))).elements.toList ::: xs
+        case "~" :: xs => File.homeDir.elements.toList ::: xs
+        case f :: Nil => getCurrentDirectory :: List(f)
+        case child :: xs => getCurrentDirectory :: child :: xs
+        case Nil => throw new Exception("Empty string is not a valid path")
+        // does not handle ~username
+      }
+      FsUrl(file)
+    }
+  }
+}
+
+object Main extends App {
+  import org.apache.commons.codec.binary.Base64
+  def encodeBase64(bytes: Array[Byte]) = Base64.encodeBase64String(bytes)
+  def decodeBase64(str: String) = Base64.decodeBase64(str)
+
+  // test the crypto methods
+  /*
+  val secret = "01234567"
+  val text = "hoge"
+  val enc = DES.encrypt(text, secret)
+  val dec = DES.decrypt(enc, secret)
+  val encStr = encodeBase64(enc)
+  val decStr = new String(dec)
+  println(text + "=" + decStr)
+  */
+
+  val (choice, fileName) = args.toList match {
+    case c :: file :: Nil => (c, file)
+    case c :: file :: files =>
+      println("Accept only one file")
+      (c, file)
+    case _ => throw new Exception("encrypt or decrypt + input file")
+  }
+
+  import rapture.fs._
+  import rapture.uri._
+  import rapture.io._
+  import rapture.codec._
+  import encodings.`UTF-8`.implicitEncoding
+
+  val file = Helper.pathToFs(fileName)
+  if (file.exists) {
+    println(s"Given file $file")
+
+  } else {
+    throw new Exception(s"$file does not exist")
+  }
+  val rawContent = file.slurp[Char]
+
+  //println("Enter a password of 8 digits")
+  //val password = scala.io.StdIn.readLine()
+  val password = "01234567"
+
+  choice match {
+    case "encrypt" => {
+      println("Encrypt")
+      val encContent = DES.encrypt(rawContent, password)
+      val decContent = new String(DES.decrypt(encContent, password))
+      if (rawContent != decContent) throw new Exception("decode(encode(text)) != text")
+      println(encodeBase64(encContent))
+    }
+
+    case "decrypt" => {
+      println("Decrypt")
+      val byteArray = decodeBase64(rawContent)
+      val decContent = new String(DES.decrypt(byteArray, password))
+      println(decContent)
+    }
+
+    case _ => throw new Exception("encrypt or decrypt")
+}
+
+//  println(encodeBase64(DES.encrypt("hoge", "01234567")))
+//  //=> vyudTtnBJfs=
+//
+//  println(encodeBase64(AES.encrypt("hoge", "0123456789012345")))
+//  //=> QWSouZUMVYMfS86xFyBgtQ==
+//
+//  println(encodeBase64(DES.encrypt(123L, "01234567")))
+//  //=> Cqw2ipxTtvIIu122s3wG1w==
+//
+//  println(encodeBase64(DES.encrypt(123, "01234567")))
+//  //=> BV+LSCSYmUU=
+}
+
+//Main.main(args)
