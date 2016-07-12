@@ -12,7 +12,7 @@ object Script extends App {
 
   val value = Person("Roger", 123)
   val json = Json.format(Json(value))
-  println(json)
+  println("toto" + json)
 
 }
 //Script.main(args)
